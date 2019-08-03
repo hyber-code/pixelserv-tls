@@ -398,7 +398,7 @@ static void generate_cert(char* pem_fn, const char *pem_dir, X509_NAME *issuer, 
     RSA *rsa = RSA_new();
     BIGNUM *e = BN_new();
     BN_set_word(e, RSA_F4); 
-    if (RSA_generate_key_ex(rsa, 2048, e, NULL) < 0)
+    if (RSA_generate_key_ex(rsa, 4096, e, NULL) < 0)
         goto free_all;
 #ifdef DEBUG
     printf("%s: rsa key generated for [%s]\n", __FUNCTION__, pem_fn);
