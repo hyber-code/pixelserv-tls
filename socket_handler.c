@@ -9,6 +9,14 @@
 #include <openssl/err.h>
 
 #include "socket_handler.h"
+
+/* true if the request target is exactly url, optionally followed by a query string */
+static int path_is(const char *path, const char *url)
+{
+  size_t n = strlen(url);
+  return !strncmp(path, url, n) && (path[n] == '\0' || path[n] == '?');
+}
+
 #include "certs.h"
 #include "logger.h"
 
@@ -956,12 +964,13 @@ end_post:
           } else if (CONN_TLSTOR(ptr, allow_admin) && stats_reset_requested(path, stats_url)) {
             pipedata.status = SEND_STATS;
             stats_reset(GLOBAL(g, pem_dir));
-            /* redirect back so that reloading the page does not reset again */
+            /* redirect back so that reloading the page does not reset again. The empty relative
+               reference "?" keeps the path the browser used, so it also works behind a reverse proxy
+               that maps its own paths onto the stats page. */
             rsize = asprintf(&aspbuf,
-                             "HTTP/1.1 303 See Other\r\nLocation: %s\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n",
-                             stats_url);
+                             "HTTP/1.1 303 See Other\r\nLocation: ?\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
             response = aspbuf;
-          } else if (!strcmp(path, stats_url) && CONN_TLSTOR(ptr, allow_admin)) {
+          } else if (path_is(path, stats_url) && CONN_TLSTOR(ptr, allow_admin)) {
             pipedata.status = SEND_STATS;
             version_string = get_version(argc, argv);
             stat_string = get_stats_html(version_string, stats_text_url);
@@ -976,7 +985,7 @@ end_post:
             free(version_string);
             free(stat_string);
             response = aspbuf;
-          } else if (!strcmp(path, stats_text_url) && CONN_TLSTOR(ptr, allow_admin)) {
+          } else if (path_is(path, stats_text_url) && CONN_TLSTOR(ptr, allow_admin)) {
             pipedata.status = SEND_STATSTEXT;
             version_string = get_version(argc, argv);
             stat_string = get_stats(0, 1);
