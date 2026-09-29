@@ -1024,6 +1024,8 @@ end_post:
                 for (tok = strtok_r(NULL, "\r\n", &bufptr); tok; tok = strtok_r(NULL, "\r\n", &bufptr)) {
                   char *hkey = strtok(tok, ":");
                   char *hvalue = strtok(NULL, "\r\n");
+                  if (!hkey || !hvalue)
+                    continue;
                   if (strstr_first(hkey, "Referer") && strstr_first(hvalue, url)) {
                     url = NULL;
                     TESTPRINT("Not redirecting likely callback URL: %s:%s\n", hkey, hvalue);
@@ -1046,7 +1048,9 @@ end_post:
               url = NULL;
               TESTPRINT("Sending redirect: %s\n", url);
             } else {
-              char *file = strrchr(strtok(path, "?#;="), '/');
+              /* strtok() returns NULL when the path consists only of "?#;=" characters */
+              char *path_tok = strtok(path, "?#;=");
+              char *file = path_tok ? strrchr(path_tok, '/') : NULL;
               if (file == NULL) {
                 pipedata.status = SEND_BAD_PATH;
                 log_msg(LGG_DEBUG, "URL contains invalid file path %s", path);

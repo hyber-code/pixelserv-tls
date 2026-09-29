@@ -19,6 +19,8 @@ cases = [
  b"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 99999999999\r\n\r\nabc",
  b"POST / HTTP/1.1\r\nHost: a\r\nContent-Length: abc\r\n\r\n",
  b"OPTIONS * HTTP/1.1\r\nHost: a\r\n\r\n", b"GET /log=99999999999 HTTP/1.1\r\n\r\n",
+ b"GET ? HTTP/1.1\r\nHost: a\r\n\r\n", b"GET = HTTP/1.1\r\n\r\n", b"GET ;;; HTTP/1.1\r\n\r\n", b"GET #x HTTP/1.1\r\n\r\n",
+ b"GET / HTTP/1.1\r\n:\r\nHost: a\r\n\r\n", b"GET /?u=http://x.com/a.gif HTTP/1.1\r\n:\r\n\r\n", b"GET\r\n\r\n", b"GET /a.gif\r\n\r\n",
  b"GET /servstats HTTP/1.1\r\nHost: a\r\n\r\n", b"GET /servstats.txt HTTP/1.1\r\n\r\n",
  b"GET /ca.crt HTTP/1.1\r\nHost: a\r\n\r\n", b"GET / \r\n", b"G", b" ",
 ]
