@@ -1,7 +1,12 @@
 #!/usr/bin/make -f
 
 %:
-	dh $@ --with autoreconf
+	dh $@
 
 override_dh_auto_configure:
-	dh_auto_configure -- --host mipsel-linux-gnu LDFLAGS=-L../openssl-1.1.0l
+	autoreconf -i
+	dh_auto_configure
+
+# The binary is built without symbols by the Makefile; the unit is installed by dh_installsystemd
+override_dh_dwz:
+override_dh_strip:

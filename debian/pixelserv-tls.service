@@ -1,0 +1,34 @@
+[Unit]
+Description=pixelserv-tls, empty responses for blocked ad and tracker hosts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pixelserv
+Group=pixelserv
+EnvironmentFile=-/etc/default/pixelserv-tls
+ExecStart=/usr/bin/pixelserv-tls -f -u pixelserv -z /var/lib/pixelserv $PIXELSERV_OPTS
+Restart=on-failure
+RestartSec=3
+
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/pixelserv
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

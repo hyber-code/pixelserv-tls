@@ -1,0 +1,3 @@
+# Extra command line options for pixelserv-tls, e.g. a listening address or -l 3
+# The service always runs with: -f -u pixelserv -z /var/lib/pixelserv
+PIXELSERV_OPTS="-l 2"

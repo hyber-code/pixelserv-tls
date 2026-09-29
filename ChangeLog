@@ -8,7 +8,7 @@
 * CHANGED leaf certificates are ECDSA P-256 by default (build with -DPIXELSERV_RSA_LEAF for RSA 2048)
 * CHANGED leaf certificate validity 398 days, random 63-bit serial numbers
 * CHANGED privilege drop clears groups, sets gid then uid, and exits if it fails when started as root
-* CHANGED hardening compiler flags (stack protector, FORTIFY_SOURCE, format-security)
+* CHANGED hardening compiler flags (stack protector, format-security)
 * NEW GitHub Actions: build, smoke test, ASan/UBSan fuzz run, multi-arch image (amd64, arm64, armv7)
 * NEW deploy/: Dockerfile, docker-compose.yml, systemd unit, deployment guide for Proxmox and Raspberry Pi
 * NEW tests/smoke.sh and tests/fuzz.sh
