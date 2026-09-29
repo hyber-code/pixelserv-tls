@@ -1,4 +1,5 @@
-# docker compose -f deploy/docker-compose.yml up -d   (run from the repo root, with ./certs/ca.crt and ca.key present)
+# docker compose -f deploy/docker-compose.yml up -d --build   (run from the repo root)
+# ./certs must contain ca.crt and ca.key and be owned by uid 65534: chown -R 65534:65534 certs
 services:
   pixelserv-tls:
     build:

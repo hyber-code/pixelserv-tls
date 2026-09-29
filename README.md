@@ -17,30 +17,108 @@ Server certificates for any given advert/tracker domain are generated automatica
 
 See `ChangeLog` for details.
 
-## Quick start (Debian, Ubuntu, Raspberry Pi OS, Proxmox LXC or VM)
+## Step-by-step install guides
 
+Pick ONE. All three end with the same check (step "Check it works" below). pixelserv-tls answers on **port 80 (HTTP) and port 443 (HTTPS)**, so nothing else may use those ports on the same IP (see "Pi-hole on the same machine").
+
+### Guide 1: Raspberry Pi (Raspberry Pi OS or any Debian/Ubuntu, 32 or 64 bit)
+
+1. Log in over SSH and become root: `sudo -i`
+2. Get the code and run the installer:
+
+       apt-get install -y git
+       git clone https://github.com/hyber-code/pixelserv-tls
+       cd pixelserv-tls
+       bash deploy/install.sh
+
+3. Wait for it to finish (a few minutes on a Pi). At the end it prints a summary and saves a log to `/tmp/pixelserv-install.log`.
+4. Copy `/var/lib/pixelserv/ca.crt` to your phone and computers and trust it as a root certificate (only needed to avoid HTTPS warnings). Never share `ca.key`.
+5. Go to "Check it works".
+
+The installer builds the program, creates a locked-down `pixelserv` user, creates a CA if you have none, installs a systemd service and starts it on ports 80 and 443. Update later with `git pull && bash deploy/install.sh` (your CA is kept).
+
+### Guide 2: Docker (Raspberry Pi, Proxmox VM/LXC, any Linux)
+
+1. Become root: `sudo -i`, and install Docker if you don't have it (`curl -fsSL https://get.docker.com | sh`).
+2. Get the code and create a CA. The container drops to the unprivileged user `nobody` (uid 65534) after it opens port 80/443, so that user must own the certificate folder:
+
+       git clone https://github.com/hyber-code/pixelserv-tls
+       cd pixelserv-tls
+       mkdir -p certs
+       openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+         -keyout certs/ca.key -out certs/ca.crt -subj "/CN=pixelserv-tls CA"
+       chown -R 65534:65534 certs
+       chmod 600 certs/ca.key
+
+3. Start it (builds the image on the machine itself, so it works on any Pi):
+
+       docker compose -f deploy/docker-compose.yml up -d --build
+
+4. Trust `certs/ca.crt` on your devices, then go to "Check it works".
+
+Logs: `docker logs pixelserv-tls`. Update: `git pull && docker compose -f deploy/docker-compose.yml up -d --build`. Stop: `docker compose -f deploy/docker-compose.yml down`.
+If you prefer the ready-made image built by CI, replace the `build:` block in the compose file with `image: ghcr.io/hyber-code/pixelserv-tls:latest` (the package must be public in your GitHub package settings).
+
+### Guide 3: Any Linux, run by hand
+
+Good for a first test or a quick LXC. Root (or `sudo`) is only needed to open the low ports 80 and 443 and to install packages; the program does not keep root, and Guide 1 gives an unprivileged user that permission instead. Commands below assume a root shell (`sudo -i`):
+
+    apt-get install -y build-essential autoconf automake libssl-dev openssl git
     git clone https://github.com/hyber-code/pixelserv-tls
     cd pixelserv-tls
-    sudo bash deploy/install.sh
+    autoreconf -i && ./configure && make
+    install -m 0755 pixelserv-tls /usr/local/bin/
 
-This builds it, installs to `/usr/local/bin`, creates an unprivileged `pixelserv` user, creates a CA in `/var/lib/pixelserv` if there is none, and starts the systemd service. Then trust `/var/lib/pixelserv/ca.crt` on your devices and keep `ca.key` private.
+    mkdir -p /var/lib/pixelserv
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -keyout /var/lib/pixelserv/ca.key -out /var/lib/pixelserv/ca.crt -subj "/CN=pixelserv-tls CA"
+    chmod 600 /var/lib/pixelserv/ca.key
+    chown -R nobody:nogroup /var/lib/pixelserv
 
-## Other ways to install
+    pixelserv-tls -f -z /var/lib/pixelserv -l 2
+
+It runs in the foreground so you can see it (`Ctrl+C` stops it). Started as root it opens ports 80 and 443 and then drops itself to the user `nobody`, which is why the folder is owned by `nobody`. To run without root at all, add `-p 8080 -k 8443` (any ports above 1024) and make the folder belong to your own user; then point clients at those ports or forward 80/443 to them. To keep it running after you log out, use Guide 1 instead (systemd) or `nohup pixelserv-tls -z /var/lib/pixelserv -l 2 &`.
+
+### Check it works
+
+From another machine (replace `IP` with the address of the machine running pixelserv-tls):
+
+    curl -i http://IP/generate_204          # expect: HTTP/1.1 204 No Content
+    curl -s --cacert ca.crt --resolve test.example.com:443:IP https://test.example.com/ ; sleep 2
+    curl -i --cacert ca.crt --resolve test.example.com:443:IP https://test.example.com/
+
+The first HTTPS request for a new domain always fails: the certificate for it is created on that first request, and later requests work. Copy `ca.crt` to the machine you test from first.
+
+### Pi-hole on the same machine (port 80 and 443 conflict)
+
+Pi-hole's web interface also wants port 80, so only one of the two can have it. Two simple ways:
+
+- **Move Pi-hole's web interface** to other ports (for example 8080 and 8443). Pi-hole v6: Settings > All settings > Webserver and API > `webserver.port`. Pi-hole v5: change `server.port` in `/etc/lighttpd/lighttpd.conf` and restart `lighttpd`. Then start pixelserv-tls. Check the current setting names in your Pi-hole version, they have changed between releases.
+- **Run pixelserv-tls somewhere else** (another Pi, a Proxmox LXC or VM) and point Pi-hole at that machine's IP.
+
+Then tell Pi-hole to answer blocked domains with the IP of the machine running pixelserv-tls (Pi-hole's "blocking mode" setting, custom IP option) instead of a blank answer. Blocked ads and trackers now get an instant empty reply instead of timing out.
+
+### Troubleshooting
+
+- `Address already in use`: something else owns port 80 or 443 (`ss -ltnp | grep -E ':80 |:443 '`). Pi-hole, nginx and Apache are the usual ones.
+- HTTPS always fails even on the second try: the certificate folder is not writable by the run-as user (`nobody` in Guides 2 and 3, `pixelserv` in Guide 1). Re-run the `chown` step.
+- HTTPS warnings on a device: `ca.crt` is not installed as a trusted root on that device.
+- Guide 1 logs: `journalctl -u pixelserv-tls -e`. Guide 2 logs: `docker logs pixelserv-tls`.
+
+## Other install methods
 
 | Method | Command |
 |---|---|
-| Docker Compose | `mkdir certs` and create a CA (see `deploy/README.md`), then `docker compose -f deploy/docker-compose.yml up -d` |
-| Docker image (built by CI from `master`) | `docker run -d -p 80:80 -p 443:443 -v $PWD/certs:/var/cache/pixelserv ghcr.io/hyber-code/pixelserv-tls:latest` (the package must be set to public in your GitHub package settings) |
-| Debian package | `sudo apt install debhelper autoconf automake libssl-dev && dpkg-buildpackage -us -uc -b && sudo apt install ../pixelserv-tls_*.deb` |
-| Build from source | `autoreconf -i && ./configure && make && sudo make install` (needs OpenSSL 1.1.1 or newer, 3.x recommended) |
+| Debian package | `apt install debhelper autoconf automake libssl-dev && dpkg-buildpackage -us -uc -b && apt install ../pixelserv-tls_*.deb` (then create a CA as the post-install message says) |
+| Build from source | `autoreconf -i && ./configure && make && make install` (OpenSSL 1.1.1 or newer, 3.x recommended) |
 
-Full instructions, CA creation, systemd, compose and Proxmox notes: `deploy/README.md`.
+More detail on CA creation, systemd and Proxmox: `deploy/README.md`.
 
 ### Status of each method
 
-Tested: building and running on x86-64 Linux with OpenSSL 3, HTTP and TLS 1.2/1.3 requests, the `.deb` build and its post-install script, and the installer script (with systemd stubbed). Not yet tested: real ARM hardware, the Docker image, the systemd unit under a real systemd. CI builds the ARM images under QEMU, so check the Actions tab after your first push.
+Tested: building and running on x86-64 Linux with OpenSSL 3, running as root with the drop to `nobody` on ports 80/443-style binding, HTTP and TLS 1.2/1.3 requests, the `.deb` build and its post-install script, and the installer script (with systemd stubbed). Not yet tested: real Raspberry Pi hardware, the Docker image, the systemd unit under a real systemd. CI builds the ARM images under QEMU, so check the Actions tab after your first push.
 
-## Launch manually
+## Command line
 
     pixelserv-tls -f -z /path/to/cert-dir <listening ip>
 

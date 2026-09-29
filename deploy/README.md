@@ -16,6 +16,7 @@ warnings. Keep `ca.key` private: anyone holding it can impersonate sites to thos
 ## 2. Run with Docker (Proxmox LXC or VM, Raspberry Pi 64-bit or 32-bit OS)
 
     docker build -f deploy/Dockerfile -t pixelserv-tls .
+    chown -R 65534:65534 certs   # the container drops to user "nobody" (65534) after binding ports
     docker run -d --name pixelserv --restart unless-stopped \
       -p 80:80 -p 443:443 -v "$PWD/certs:/var/cache/pixelserv" pixelserv-tls
 
