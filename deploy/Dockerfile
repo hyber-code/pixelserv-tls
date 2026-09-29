@@ -11,5 +11,8 @@ COPY --from=build /src/pixelserv-tls /usr/local/bin/pixelserv-tls
 # Put ca.crt and ca.key in this volume (see deploy/README.md)
 VOLUME /var/cache/pixelserv
 EXPOSE 80 443
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:80/generate_204 || exit 1
 ENTRYPOINT ["pixelserv-tls"]
-CMD ["-z", "/var/cache/pixelserv", "-l", "2"]
+# -f keeps it in the foreground; the server drops from root to "nobody" after binding ports
+CMD ["-f", "-z", "/var/cache/pixelserv", "-l", "2"]

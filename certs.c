@@ -418,28 +418,55 @@ static void generate_cert(char* pem_fn, const char *pem_dir, X509_NAME *issuer, 
     if(pem_fn[0] == '_') pem_fn[0] = '*';
 
     // -- generate cert
-    BIGNUM *e = BN_new();
+    BIGNUM *e = NULL;
+#ifdef PIXELSERV_RSA_LEAF
+    /* legacy: RSA 2048 leaf keys (slow to generate on small devices) */
+    e = BN_new();
     BN_set_word(e, RSA_F4);
-#if OPENSSL_VERSION_MAJOR >= 3
+# if OPENSSL_VERSION_MAJOR >= 3
     key = EVP_RSA_gen(2048);
     if (!key)
         goto free_all;
-#else
+# else
     RSA *rsa = RSA_new();
     if (RSA_generate_key_ex(rsa, 2048, e, NULL) < 0)
         goto free_all;
     key = EVP_PKEY_new();
     EVP_PKEY_assign_RSA(key, rsa); // rsa will be freed when key is freed
+# endif
+#else
+    /* default: ECDSA P-256, generated in milliseconds even on a Raspberry Pi */
+# if OPENSSL_VERSION_MAJOR >= 3
+    key = EVP_EC_gen("P-256");
+    if (!key)
+        goto free_all;
+# else
+    EC_KEY *eckey = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!eckey || EC_KEY_generate_key(eckey) != 1) {
+        EC_KEY_free(eckey);
+        goto free_all;
+    }
+    key = EVP_PKEY_new();
+    EVP_PKEY_assign_EC_KEY(key, eckey); // eckey will be freed when key is freed
+# endif
 #endif
 #ifdef DEBUG
-    printf("%s: rsa key generated for [%s]\n", __FUNCTION__, pem_fn);
+    printf("%s: leaf key generated for [%s]\n", __FUNCTION__, pem_fn);
 #endif
     if((x509 = X509_new()) == NULL)
         goto free_all;
-    ASN1_INTEGER_set(X509_get_serialNumber(x509),rand());
+    {   /* random 63-bit serial number, never zero */
+        BIGNUM *serial = BN_new();
+        if (serial == NULL || !BN_rand(serial, 63, BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY)
+            || BN_is_zero(serial) || !BN_to_ASN1_INTEGER(serial, X509_get_serialNumber(x509))) {
+            BN_free(serial);
+            goto free_all;
+        }
+        BN_free(serial);
+    }
     X509_set_version(x509, 2); // X509 v3
     X509_gmtime_adj(X509_get_notBefore(x509), 0);
-    X509_gmtime_adj(X509_get_notAfter(x509), 3600*24*825L); // cert valid for 825 days
+    X509_gmtime_adj(X509_get_notAfter(x509), 3600*24*398L); // cert valid for 398 days (current browser limit)
     X509_set_issuer_name(x509, issuer);
     X509_NAME *name = X509_get_subject_name(x509);
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (unsigned char *)pem_fn, -1, -1, 0);
@@ -480,7 +507,7 @@ static void generate_cert(char* pem_fn, const char *pem_dir, X509_NAME *issuer, 
     log_msg(LGG_NOTICE, "cert generated to disk: %s", pem_fn);
 
 free_all:
-    BN_free(e);
+    BN_free(e);  /* NULL-safe */
     EVP_MD_CTX_destroy(p_ctx);
     EVP_PKEY_free(key);
     X509_EXTENSION_free(ext);
@@ -532,7 +559,13 @@ void cert_tlstor_init(const char *pem_dir, cert_tlstor_t *ct)
             log_msg(LGG_ERR, "%s: failed to seek ca.crt", __FUNCTION__);
 
         fsz = ftell(fp);
-        cafile = malloc(fsz);
+        if (fsz <= 0 || (cafile = malloc(fsz)) == NULL) {
+            log_msg(LGG_ERR, "%s: ca.crt is empty or unreadable", __FUNCTION__);
+            fclose(fp);
+            X509_free(x509);
+            EVP_PKEY_free(pubkey);
+            return;
+        }
         fseek(fp, 0L, SEEK_SET);
         fsz = fread(cafile, 1, fsz, fp);
 
@@ -558,7 +591,8 @@ void cert_tlstor_init(const char *pem_dir, cert_tlstor_t *ct)
     fp = fopen(cert_file, "r");
     if(!fp || !PEM_read_PrivateKey(fp, &ct->privkey, pem_passwd_cb, (void*)pem_dir))
         log_msg(LGG_ERR, "%s: failed to load ca.key", __FUNCTION__);
-    fclose(fp);
+    if (fp)
+        fclose(fp);
 }
 
 void cert_tlstor_cleanup(cert_tlstor_t *c)

@@ -817,7 +817,12 @@ void* conn_handler( void *ptr )
           if (!h)
             goto end_post;
           h += strlen("Content-Length:");
-          length = atoi(strtok(h, "\r\n"));
+          {
+            char *len_tok = strtok(h, "\r\n");
+            length = len_tok ? atoi(len_tok) : 0;
+            if (length < 0)
+              length = 0;
+          }
 
           if (log_verbose >= LGG_INFO) {
             log_msg(LGG_DEBUG, "POST socket: %d Content-Length: %d", new_fd, length);
@@ -832,9 +837,13 @@ void* conn_handler( void *ptr )
 
             /* body points to "\r\n\r\n" */
             if (body && body_len > 4) {
-              recv_len = body_len - 4;
+              /* the client may send more body bytes than Content-Length
+                 announces: never copy more than the buffer holds */
+              int got = body_len - 4;
+              recv_len = (got < post_buf_size) ? got : post_buf_size;
               memcpy(post_buf, body + 4, recv_len);
-              length -= recv_len;
+              post_buf[recv_len] = '\0';
+              length -= got;
               post_buf_size -= recv_len;
             }
             log_msg(LGG_DEBUG, "POST socket: %d expect length: %d", new_fd, length);

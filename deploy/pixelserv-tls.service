@@ -1,0 +1,41 @@
+# Install: sudo useradd --system --no-create-home --shell /usr/sbin/nologin pixelserv
+#          sudo install pixelserv-tls /usr/local/bin/
+#          sudo cp deploy/pixelserv-tls.service /etc/systemd/system/
+#          sudo mkdir -p /var/lib/pixelserv && sudo cp certs/ca.* /var/lib/pixelserv/
+#          sudo chown -R pixelserv: /var/lib/pixelserv && sudo chmod 600 /var/lib/pixelserv/ca.key
+#          sudo systemctl daemon-reload && sudo systemctl enable --now pixelserv-tls
+[Unit]
+Description=pixelserv-tls, empty responses for blocked ad and tracker hosts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pixelserv
+Group=pixelserv
+ExecStart=/usr/local/bin/pixelserv-tls -f -u pixelserv -z /var/lib/pixelserv -l 2
+Restart=on-failure
+RestartSec=3
+
+# Bind ports 80 and 443 without running as root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Sandboxing
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/pixelserv
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

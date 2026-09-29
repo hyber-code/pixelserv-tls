@@ -1,3 +1,18 @@
+2026-09-29 modernisation (fork)
+
+* FIXED build failure on OpenSSL 3 (ERR_GET_FUNC removed)
+* FIXED heap buffer overflow when a POST body is larger than its Content-Length (remote crash)
+* FIXED crash when ca.key or ca.crt is missing, and crash when the -u user does not exist
+* FIXED swapped/missing log arguments on two error paths, asprintf format string, unchecked realloc/asprintf
+* CHANGED require TLS 1.2 or newer, modern cipher list (AEAD only)
+* CHANGED leaf certificates are ECDSA P-256 by default (build with -DPIXELSERV_RSA_LEAF for RSA 2048)
+* CHANGED leaf certificate validity 398 days, random 63-bit serial numbers
+* CHANGED privilege drop clears groups, sets gid then uid, and exits if it fails when started as root
+* CHANGED hardening compiler flags (stack protector, FORTIFY_SOURCE, format-security)
+* NEW GitHub Actions: build, smoke test, ASan/UBSan fuzz run, multi-arch image (amd64, arm64, armv7)
+* NEW deploy/: Dockerfile, docker-compose.yml, systemd unit, deployment guide for Proxmox and Raspberry Pi
+* NEW tests/smoke.sh and tests/fuzz.sh
+
 2019-12-13 v2.3.1
 
 * NEW check and purge expired certs on-the-fly. Generate new ones to replace the expired automatically.

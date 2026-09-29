@@ -1,3 +1,6 @@
+> **About this fork:** updated for OpenSSL 3, hardened, ECDSA certificates, CI, Docker and systemd support.
+> See `ChangeLog` and `deploy/README.md`. Upstream: https://github.com/kvic-z/pixelserv-tls
+
 [![Build Status](https://travis-ci.org/kvic-z/pixelserv-tls.svg?branch=master)](https://travis-ci.org/kvic-z/pixelserv-tls)
 
 

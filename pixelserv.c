@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #ifdef DROP_ROOT
+#include <grp.h>
 #include <pwd.h>
 #endif
 #ifdef TEST
@@ -343,7 +344,9 @@ int main (int argc, char* argv[])
   mkfifo(PIXEL_CERT_PIPE, 0600);
 #ifdef DROP_ROOT
   pw = getpwnam(user);
-  if (chown(PIXEL_CERT_PIPE, pw->pw_uid, pw->pw_gid) < 0) {
+  if (pw == NULL) {
+      log_msg(LGG_WARNING, "Unknown user \"%s\"", user);
+  } else if (geteuid() == 0 && chown(PIXEL_CERT_PIPE, pw->pw_uid, pw->pw_gid) < 0) {
       log_msg(LGG_CRIT, "chown failed to set owner of %s to %s", PIXEL_CERT_PIPE, user);
       exit(EXIT_FAILURE);
   }
@@ -486,12 +489,22 @@ int main (int argc, char* argv[])
 #endif
   }
 
-#ifdef DROP_ROOT // no longer fatal error if doesn't work
-  if ( (pw = getpwnam(user)) == NULL ) {
-    log_msg(LGG_WARNING, "Unknown user \"%s\"", user);
-  }
-  else if ( setuid(pw->pw_uid) ) {
-    log_msg(LGG_WARNING, "setuid %d: %m", pw->pw_uid);
+#ifdef DROP_ROOT
+  /* Only root has anything to drop. When started unprivileged (systemd User=,
+     docker --user) skip. When root, dropping is mandatory: fail closed instead
+     of silently continuing as root. Drop groups first, then gid, then uid. */
+  if (geteuid() == 0) {
+    if ( (pw = getpwnam(user)) == NULL ) {
+      log_msg(LGG_WARNING, "Unknown user \"%s\", continuing as root", user);
+    }
+    else if (setgroups(0, NULL) || setgid(pw->pw_gid) || setuid(pw->pw_uid)) {
+      log_msg(LGG_CRIT, "failed to drop privileges to %s: %m", user);
+      exit(EXIT_FAILURE);
+    }
+    else if (pw->pw_uid != 0 && setuid(0) == 0) {
+      log_msg(LGG_CRIT, "privilege drop to %s did not stick", user);
+      exit(EXIT_FAILURE);
+    }
   }
 #endif
 
