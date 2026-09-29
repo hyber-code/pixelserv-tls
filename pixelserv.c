@@ -80,6 +80,7 @@ void signal_handler(int sig)
     free(stats_string);
 
     sslctx_tbl_save(tls_pem);
+    stats_save(tls_pem);
 
     if (sig == SIGTERM) {
       log_msg(LGG_NOTICE, "exit on SIGTERM");
@@ -358,6 +359,8 @@ int main (int argc, char* argv[])
   sslctx_tbl_init(cert_cache_size);
   conn_stor_init(max_num_threads);
 
+  stats_load(tls_pem);
+  stats_token_init();
   sslctx_tbl_load(tls_pem, cert_tlstor.cachain);
   SSL_CTX *sslctx = create_default_sslctx(tls_pem);
 
@@ -906,6 +909,8 @@ start_service_thread:
   pthread_join(certgen_thread, NULL);
 
 quit_main:
+  if (!do_benchmark)
+    stats_save(tls_pem);
   SSL_CTX_free(sslctx);
   conn_stor_flush();
   sslctx_tbl_cleanup();

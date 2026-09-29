@@ -169,6 +169,14 @@ char* get_version(int argc, char* argv[]);
 char* get_stats(const int sta_offset, const int stt_offset);
 // Full HTML statistics page (allocated, caller frees). version is escaped, txt_url may be NULL.
 char* get_stats_html(const char* version, const char* txt_url);
+// Persist counters across restarts in <dir>/stats.dat (delete the file to reset)
+void stats_load(const char *dir);
+void stats_save(const char *dir);
+void stats_token_init(void);
+int stats_reset_requested(const char *path, const char *stats_url); // 1 when path is <stats_url>?reset=<token>
+void stats_reset(const char *dir); // zero all counters, restart "since", save
+void stats_save_periodic(const char *dir); // saves at most every 10 minutes and only when something changed
+extern time_t stats_since;
 
 float ema(float curr, int new, int *cnt);
 

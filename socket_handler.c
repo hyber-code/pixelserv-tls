@@ -953,6 +953,14 @@ end_post:
             }
             free(ca_file);
             /* aspbuf will be freed at the of the loop */
+          } else if (CONN_TLSTOR(ptr, allow_admin) && stats_reset_requested(path, stats_url)) {
+            pipedata.status = SEND_STATS;
+            stats_reset(GLOBAL(g, pem_dir));
+            /* redirect back so that reloading the page does not reset again */
+            rsize = asprintf(&aspbuf,
+                             "HTTP/1.1 303 See Other\r\nLocation: %s\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n",
+                             stats_url);
+            response = aspbuf;
           } else if (!strcmp(path, stats_url) && CONN_TLSTOR(ptr, allow_admin)) {
             pipedata.status = SEND_STATS;
             version_string = get_version(argc, argv);

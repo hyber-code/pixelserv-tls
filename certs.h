@@ -99,6 +99,7 @@ int sslctx_tbl_get_sess_cnt();
 int sslctx_tbl_get_sess_hit();
 int sslctx_tbl_get_sess_miss();
 int sslctx_tbl_get_sess_purge();
+void sslctx_tbl_reset_counters();
 SSL_CTX * create_default_sslctx(const char *pem_dir);
 int is_ssl_conn(int fd, char *srv_ip, int srv_ip_len, const int *ssl_ports, int num_ssl_ports);
 void conn_stor_init(int slots);

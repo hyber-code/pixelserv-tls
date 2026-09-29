@@ -1,4 +1,5 @@
 #include <stdarg.h>
+#include <openssl/rand.h>
 #include "util.h"
 #include "logger.h"
 #include "certs.h"
@@ -156,6 +157,122 @@ char* get_stats(const int sta_offset, const int stt_offset) {
     return retbuf;
 }
 
+/* ---- persistent statistics --------------------------------------------- */
+/* Counters are saved to <cert dir>/stats.dat (a small text file) on shutdown and every
+   10 minutes when something changed, and loaded at start, so they survive restarts and
+   reboots. Delete the file while the server is stopped to reset all counters. */
+
+time_t stats_since = 0;
+static time_t stats_last_save = 0;
+static int stats_last_count = -1;
+
+static const struct { const char *name; volatile sig_atomic_t *val; } stats_persist[] = {
+    {"count", &count}, {"avg", &avg}, {"rmx", &rmx}, {"tav", &tav}, {"tmx", &tmx}, {"ers", &ers},
+    {"tmo", &tmo}, {"cls", &cls}, {"nou", &nou}, {"pth", &pth}, {"nfe", &nfe}, {"ufe", &ufe},
+    {"gif", &gif}, {"bad", &bad}, {"txt", &txt}, {"jpg", &jpg}, {"png", &png}, {"swf", &swf},
+    {"ico", &ico}, {"sta", &sta}, {"stt", &stt}, {"noc", &noc}, {"rdr", &rdr}, {"pst", &pst},
+    {"hed", &hed}, {"opt", &opt}, {"cly", &cly}, {"slh", &slh}, {"slm", &slm}, {"sle", &sle},
+    {"slc", &slc}, {"slu", &slu}, {"uca", &uca}, {"ucb", &ucb}, {"uce", &uce}, {"ush", &ush},
+    {"kmx", &kmx}, {"krq", &krq}, {"clt", &clt}, {"v13", &v13}, {"v12", &v12}, {"v10", &v10},
+    {"zrt", &zrt}
+};
+
+void stats_save(const char *dir)
+{
+    char path[PIXELSERV_MAX_PATH], tmp[PIXELSERV_MAX_PATH];
+    FILE *fp;
+    size_t i;
+    if (!dir) return;
+    if (!stats_since) stats_since = time(NULL);
+    snprintf(path, sizeof path, "%s/stats.dat", dir);
+    snprintf(tmp, sizeof tmp, "%s/stats.dat.tmp", dir);
+    if (!(fp = fopen(tmp, "w"))) {
+        log_msg(LGG_DEBUG, "cannot write %s: %m", tmp);
+        return;
+    }
+    fprintf(fp, "pixelserv-stats 1\nsince %ld\n", (long)stats_since);
+    for (i = 0; i < sizeof stats_persist / sizeof stats_persist[0]; i++)
+        fprintf(fp, "%s %ld\n", stats_persist[i].name, (long)*stats_persist[i].val);
+    if (fclose(fp) == 0)
+        rename(tmp, path);   /* atomic replace: a power cut never leaves a half-written file */
+    else
+        remove(tmp);
+    stats_last_save = time(NULL);
+    stats_last_count = count;
+}
+
+/* Reset: a random token generated at start is embedded in the statistics page; only a request
+   carrying it can reset the counters, so a web page on another site cannot trigger a reset. */
+static char stats_token[33];
+
+void stats_token_init(void)
+{
+    unsigned char r[16];
+    int i;
+    if (RAND_bytes(r, sizeof r) != 1)
+        for (i = 0; i < (int)sizeof r; i++) r[i] = (unsigned char)rand();
+    for (i = 0; i < (int)sizeof r; i++)
+        snprintf(stats_token + 2 * i, 3, "%02x", r[i]);
+}
+
+int stats_reset_requested(const char *path, const char *stats_url)
+{
+    size_t n = strlen(stats_url);
+    if (!stats_token[0] || strncmp(path, stats_url, n) || strncmp(path + n, "?reset=", 7))
+        return 0;
+    return strcmp(path + n + 7, stats_token) == 0;
+}
+
+void stats_reset(const char *dir)
+{
+    size_t i;
+    for (i = 0; i < sizeof stats_persist / sizeof stats_persist[0]; i++)
+        *stats_persist[i].val = 0;
+    sslctx_tbl_reset_counters();
+    stats_since = time(NULL);
+    log_msg(LGG_NOTICE, "statistics reset from the statistics page");
+    stats_save(dir);
+}
+
+void stats_save_periodic(const char *dir)
+{
+    if (stats_last_count == count || time(NULL) - stats_last_save < 600)
+        return;
+    stats_save(dir);
+}
+
+void stats_load(const char *dir)
+{
+    char path[PIXELSERV_MAX_PATH], line[96], name[32];
+    FILE *fp;
+    long v;
+    size_t i;
+    if (!dir) return;
+    snprintf(path, sizeof path, "%s/stats.dat", dir);
+    if (!(fp = fopen(path, "r"))) {
+        stats_since = time(NULL);
+        return;
+    }
+    if (!fgets(line, sizeof line, fp) || strncmp(line, "pixelserv-stats 1", 17)) {
+        log_msg(LGG_WARNING, "ignoring %s: unknown format", path);
+        fclose(fp);
+        stats_since = time(NULL);
+        return;
+    }
+    while (fgets(line, sizeof line, fp)) {
+        if (sscanf(line, "%31s %ld", name, &v) != 2 || v < 0 || v > 2000000000L)
+            continue;
+        if (!strcmp(name, "since")) { stats_since = (time_t)v; continue; }
+        for (i = 0; i < sizeof stats_persist / sizeof stats_persist[0]; i++)
+            if (!strcmp(name, stats_persist[i].name)) { *stats_persist[i].val = (sig_atomic_t)v; break; }
+    }
+    fclose(fp);
+    if (!stats_since) stats_since = time(NULL);
+    stats_last_count = count;
+    stats_last_save = time(NULL);
+    log_msg(LGG_NOTICE, "restored statistics from %s (%d requests so far)", path, (int)count);
+}
+
 /* ---- HTML statistics page ------------------------------------------------ */
 
 typedef struct { char *p; size_t len, cap; } sbuf;
@@ -241,7 +358,7 @@ static const char stats_css[] =
   ".s1{background:var(--ok)}.s2{background:var(--info)}.s3{background:var(--warn)}.s4{background:var(--mute)}.s5{background:var(--bad)}"
   ".bar{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--line);margin:4px 0 10px}.bar i{display:block;height:100%}"
   ".leg{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--mute);margin-bottom:8px}.leg b{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}"
-  "footer{color:var(--mute);font-size:12px;margin:16px 0 8px;display:flex;flex-wrap:wrap;gap:8px 16px;justify-content:space-between}a{color:var(--acc)}"
+  "button{font:inherit;font-size:12px;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:2px 8px;cursor:pointer}button:hover{border-color:var(--bad)}footer{color:var(--mute);font-size:12px;margin:16px 0 8px;display:flex;flex-wrap:wrap;gap:8px 16px;justify-content:space-between}a{color:var(--acc)}"
   "</style>";
 
 static const char stats_theme_head[] =
@@ -295,8 +412,13 @@ char* get_stats_html(const char* version, const char* txt_url)
     else
         snprintf(n3, sizeof n3, "%dm %ds", (int)(up / 60), (int)(up % 60));
     sb_addf(&b, "<div class=tile><div class='n up'>%s</div><div class=t>Uptime</div></div>", n3);
-    sb_addf(&b, "<div class=tile><div class=n>%s</div><div class=t>Requests</div><div class=d>%d ms average, %d ms slowest</div></div>",
-            fmt_num(req, n1), (int)tav, (int)tmx);
+    {
+        char since[32] = "";
+        time_t t0 = stats_since;
+        if (t0) strftime(since, sizeof since, "%d %b %Y", localtime(&t0));
+        sb_addf(&b, "<div class=tile><div class=n>%s</div><div class=t>Requests%s%s</div><div class=d>%d ms average, %d ms slowest</div></div>",
+                fmt_num(req, n1), since[0] ? " since " : "", since, (int)tav, (int)tmx);
+    }
     sb_addf(&b, "<div class=tile><div class='n%s'>%.1f%%</div><div class=t>HTTPS accepted</div><div class=d>%s of %s attempts</div></div>",
             cls_ok, ok_pct, fmt_num(slh, n1), fmt_num(https_total, n2));
     sb_addf(&b, "<div class=tile><div class='n%s'>%.1f%%</div><div class=t>Cert cache hits</div><div class=d>%d certs stored</div></div>",
@@ -421,7 +543,10 @@ char* get_stats_html(const char* version, const char* txt_url)
     }
     sb_addf(&b, "</span><span><label>Theme <select id=th><option value=''>Auto</option><option value=light>Light</option>"
                 "<option value=dark>Dark</option><option value=mono>Black &amp; white</option></select></label> "
-                "<label><input type=checkbox id=ar> refresh every 15 s</label></span></footer></main>%s</body></html>\r\n", stats_js);
+                "<label><input type=checkbox id=ar> refresh every 15 s</label> "
+                "<button type=button id=rs>Reset statistics</button></span></footer></main>%s"
+                "<script>document.getElementById('rs').onclick=function(){if(confirm('Reset all statistics to zero? This cannot be undone.'))location.href=location.pathname+'?reset=%s'}</script></body></html>\r\n",
+                stats_js, stats_token);
     (void)scp; (void)ssp;
     return b.p;
 }

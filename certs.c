@@ -49,9 +49,18 @@ inline int sslctx_tbl_get_cnt_hit() { return sslctx_tbl_cnt_hit; }
 inline int sslctx_tbl_get_cnt_miss() { return sslctx_tbl_cnt_miss; }
 inline int sslctx_tbl_get_cnt_purge() { return sslctx_tbl_cnt_purge; }
 inline int sslctx_tbl_get_sess_cnt() { return SSL_CTX_sess_number(g_sslctx); }
-inline int sslctx_tbl_get_sess_hit() { return SSL_CTX_sess_hits(g_sslctx); }
-inline int sslctx_tbl_get_sess_miss() { return SSL_CTX_sess_misses(g_sslctx); }
-inline int sslctx_tbl_get_sess_purge() { return SSL_CTX_sess_cache_full(g_sslctx); }
+/* OpenSSL keeps these session counters itself and cannot reset them, so remember a baseline */
+static int sess_hit_base, sess_miss_base, sess_purge_base;
+inline int sslctx_tbl_get_sess_hit() { return SSL_CTX_sess_hits(g_sslctx) - sess_hit_base; }
+inline int sslctx_tbl_get_sess_miss() { return SSL_CTX_sess_misses(g_sslctx) - sess_miss_base; }
+inline int sslctx_tbl_get_sess_purge() { return SSL_CTX_sess_cache_full(g_sslctx) - sess_purge_base; }
+void sslctx_tbl_reset_counters()
+{
+    sslctx_tbl_cnt_hit = sslctx_tbl_cnt_miss = sslctx_tbl_cnt_purge = 0;
+    sess_hit_base = SSL_CTX_sess_hits(g_sslctx);
+    sess_miss_base = SSL_CTX_sess_misses(g_sslctx);
+    sess_purge_base = SSL_CTX_sess_cache_full(g_sslctx);
+}
 
 static int sslctx_tbl_insert(const char *cert_name, SSL_CTX *sslctx, int ins_idx);
 static SSL_CTX* create_child_sslctx(const char* full_pem_path, const STACK_OF(X509_INFO) *cachain);
@@ -627,6 +636,7 @@ void *cert_generator(void *ptr) {
         if (ret <= 0) {
             /* timeout */
             sslctx_tbl_check_and_flush();
+            stats_save_periodic(ct->pem_dir);
             if (kcc == 0) {
                 if (++idle >= (3600 / (PIXEL_SSL_SESS_TIMEOUT / 4))) {
                     /* flush conn_stor after 3600 seconds */

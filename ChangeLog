@@ -12,6 +12,8 @@
 * NEW GitHub Actions: build, smoke test, ASan/UBSan fuzz run, multi-arch image (amd64, arm64, armv7)
 * NEW deploy/: Dockerfile, docker-compose.yml, systemd unit, deployment guide for Proxmox and Raspberry Pi
 * NEW redesigned statistics page (key numbers, HTTPS outcome bar, plain labels, warnings, responsive, Auto/Light/Dark/Black & white theme); /servstats.txt is unchanged
+* NEW Reset statistics button (with confirmation) on the statistics page
+* NEW statistics persist across restarts and reboots (stats.dat in the certificate folder, saved on shutdown and every 10 minutes)
 * FIXED remote crash on request paths made only of ?#;= characters (for example "GET ? HTTP/1.1")
 * NEW tests/smoke.sh and tests/fuzz.sh
 
