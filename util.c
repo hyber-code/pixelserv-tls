@@ -1,3 +1,4 @@
+#include <stdarg.h>
 #include "util.h"
 #include "logger.h"
 #include "certs.h"
@@ -153,6 +154,276 @@ char* get_stats(const int sta_offset, const int stt_offset) {
 
     free(uptimeStr);
     return retbuf;
+}
+
+/* ---- HTML statistics page ------------------------------------------------ */
+
+typedef struct { char *p; size_t len, cap; } sbuf;
+
+static void sb_addf(sbuf *b, const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+    if (!b->p) return;
+    for (;;) {
+        va_start(ap, fmt);
+        n = vsnprintf(b->p + b->len, b->cap - b->len, fmt, ap);
+        va_end(ap);
+        if (n < 0) { b->p[b->len] = '\0'; return; }
+        if ((size_t)n < b->cap - b->len) { b->len += n; return; }
+        size_t ncap = b->cap * 2 + n + 1;
+        char *np = realloc(b->p, ncap);
+        if (!np) { free(b->p); b->p = NULL; return; }
+        b->p = np;
+        b->cap = ncap;
+    }
+}
+
+static void sb_addesc(sbuf *b, const char *s)
+{
+    for (; s && *s; s++) {
+        switch (*s) {
+            case '&': sb_addf(b, "&amp;"); break;
+            case '<': sb_addf(b, "&lt;"); break;
+            case '>': sb_addf(b, "&gt;"); break;
+            case '"': sb_addf(b, "&quot;"); break;
+            case '\'': sb_addf(b, "&#39;"); break;
+            default: sb_addf(b, "%c", *s);
+        }
+    }
+}
+
+/* 1234567 -> "1,234,567" */
+static const char *fmt_num(unsigned long v, char *out)
+{
+    char raw[32];
+    int n = snprintf(raw, sizeof raw, "%lu", v), i, o = 0;
+    for (i = 0; i < n; i++) {
+        if (i > 0 && (n - i) % 3 == 0) out[o++] = ',';
+        out[o++] = raw[i];
+    }
+    out[o] = '\0';
+    return out;
+}
+
+static double pct(double part, double whole) { return whole > 0 ? 100.0 * part / whole : 0.0; }
+
+static void html_row(sbuf *b, const char *label, const char *code, unsigned long v, const char *unit)
+{
+    char num[40];
+    sb_addf(b, "<tr><td class=l>%s <span class=c>%s</span></td><td class=v>%s%s</td></tr>",
+            label, code, fmt_num(v, num), unit);
+}
+
+static const char stats_css[] =
+  "<style>"
+  ":root{color-scheme:light dark;--bg:#f5f6f8;--card:#fff;--fg:#1c2330;--mute:#66707f;--line:#e5e8ee;--ok:#1f9d55;--warn:#d98a00;--bad:#d64545;--info:#3b7ddd;--acc:#3b7ddd}"
+  "@media (prefers-color-scheme:dark){:root:not([data-theme]){--bg:#12161c;--card:#1b212b;--fg:#e6eaf0;--mute:#8d97a6;--line:#2a3240;--ok:#3ecf7a;--warn:#f0b13a;--bad:#f26d6d;--info:#6aa5f5;--acc:#6aa5f5}}"
+  ":root[data-theme=light]{color-scheme:light;--bg:#f5f6f8;--card:#fff;--fg:#1c2330;--mute:#66707f;--line:#e5e8ee;--ok:#1f9d55;--warn:#d98a00;--bad:#d64545;--info:#3b7ddd;--acc:#3b7ddd}"
+  ":root[data-theme=dark]{color-scheme:dark;--bg:#12161c;--card:#1b212b;--fg:#e6eaf0;--mute:#8d97a6;--line:#2a3240;--ok:#3ecf7a;--warn:#f0b13a;--bad:#f26d6d;--info:#6aa5f5;--acc:#6aa5f5}"
+  ":root[data-theme=mono]{color-scheme:light;--bg:#fff;--card:#fff;--fg:#000;--mute:#444;--line:#000;--ok:#000;--warn:#555;--bad:#000;--info:#999;--acc:#000}"
+  "[data-theme=mono] .tile,[data-theme=mono] .card,[data-theme=mono] .note{border-color:#000}[data-theme=mono] .good,[data-theme=mono] .mid,[data-theme=mono] .poor{color:#000}[data-theme=mono] .poor{text-decoration:underline}[data-theme=mono] .bar{background:#fff;border:1px solid #000}[data-theme=mono] .s1{background:#000}[data-theme=mono] .s2{background:#777}[data-theme=mono] .s3{background:#bbb}[data-theme=mono] .s4{background:#e2e2e2;box-shadow:inset 0 0 0 1px #000}[data-theme=mono] .s5{background:repeating-linear-gradient(45deg,#000 0 2px,#fff 2px 5px)}[data-theme=mono] .leg b{border:1px solid #000}"
+  "@media print{:root{--bg:#fff;--card:#fff;--fg:#000;--line:#000}}"
+  "*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}"
+  "main{max-width:1100px;margin:0 auto;padding:16px}"
+  "header{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:baseline;justify-content:space-between;margin:8px 0 16px}"
+  "h1{font-size:22px;margin:0}h2{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute);margin:0 0 8px}"
+  ".sub{color:var(--mute);font-size:13px;word-break:break-word}"
+  ".tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}"
+  ".tile,.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}"
+  ".tile .n{font-size:26px;font-weight:650;line-height:1.15;white-space:nowrap}.tile .n.up{font-size:22px;line-height:1.3}.tile .t{color:var(--mute);font-size:13px}.tile .d{color:var(--mute);font-size:12px;margin-top:2px}"
+  ".good{color:var(--ok)}.mid{color:var(--warn)}.poor{color:var(--bad)}"
+  ".note{border-left:4px solid var(--warn);background:var(--card);border-radius:8px;padding:10px 14px;margin:0 0 12px;border-top:1px solid var(--line);border-right:1px solid var(--line);border-bottom:1px solid var(--line)}"
+  ".note.bad{border-left-color:var(--bad)}.note.ok{border-left-color:var(--ok)}"
+  ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px}"
+  "table{width:100%;border-collapse:collapse}td{padding:5px 0;border-top:1px solid var(--line)}tr:first-child td{border-top:0}"
+  ".l{color:var(--fg)}.c{color:var(--mute);font:11px ui-monospace,Menlo,Consolas,monospace;margin-left:4px}.v{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;padding-left:12px}"
+  ".s1{background:var(--ok)}.s2{background:var(--info)}.s3{background:var(--warn)}.s4{background:var(--mute)}.s5{background:var(--bad)}"
+  ".bar{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--line);margin:4px 0 10px}.bar i{display:block;height:100%}"
+  ".leg{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--mute);margin-bottom:8px}.leg b{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}"
+  "footer{color:var(--mute);font-size:12px;margin:16px 0 8px;display:flex;flex-wrap:wrap;gap:8px 16px;justify-content:space-between}a{color:var(--acc)}"
+  "</style>";
+
+static const char stats_theme_head[] =
+  "<script>try{var th=localStorage.getItem('pxtheme');if(th)document.documentElement.setAttribute('data-theme',th)}catch(e){}</script>";
+
+static const char stats_js[] =
+  "<script>(function(){var t,c=document.getElementById('ar');function s(){clearTimeout(t);if(c&&c.checked){location.hash='r';t=setTimeout(function(){location.reload()},15000)}else if(location.hash=='#r'){history.replaceState(null,'',location.pathname)}}"
+  "if(c){c.checked=location.hash=='#r';c.addEventListener('change',s);s()}"
+  "var m=document.getElementById('th');if(m){var v=document.documentElement.getAttribute('data-theme')||'';m.value=v;m.addEventListener('change',function(){"
+  "try{if(m.value){localStorage.setItem('pxtheme',m.value);document.documentElement.setAttribute('data-theme',m.value)}else{localStorage.removeItem('pxtheme');document.documentElement.removeAttribute('data-theme')}}catch(e){}})}})()</script>";
+
+char* get_stats_html(const char* version, const char* txt_url)
+{
+    sbuf b;
+    char n1[40], n2[40], n3[40];
+    unsigned long req = count, https_total, tls_total, slu_total;
+    double ok_pct, hit_pct, t13_pct;
+    unsigned int up = process_uptime();
+    int sct = sslctx_tbl_get_cnt_total(), sch = sslctx_tbl_get_cnt_hit();
+    int scm = sslctx_tbl_get_cnt_miss(), scp = sslctx_tbl_get_cnt_purge();
+    int sst = sslctx_tbl_get_sess_cnt(), ssh = sslctx_tbl_get_sess_hit();
+    int ssm = sslctx_tbl_get_sess_miss(), ssp = sslctx_tbl_get_sess_purge();
+    const char *cls_ok;
+
+    b.cap = 16384; b.len = 0; b.p = malloc(b.cap);
+    if (!b.p) return NULL;
+    b.p[0] = '\0';
+
+    https_total = (unsigned long)slh + slm + sle + slc + slu;
+    tls_total = (unsigned long)v13 + v12 + v10;
+    slu_total = (unsigned long)uca + ucb + uce + ush;
+    ok_pct = pct(slh, https_total);
+    hit_pct = pct(sch, (double)sch + scm);
+    t13_pct = pct(v13, tls_total);
+
+    sb_addf(&b, "<!DOCTYPE html><html lang=en><head><meta charset=utf-8>"
+                "<meta name=viewport content='width=device-width,initial-scale=1'>"
+                "<link rel=icon href='/favicon.ico' type='image/x-icon'><title>pixelserv-tls statistics</title>%s%s</head><body><main>", stats_css, stats_theme_head);
+
+    sb_addf(&b, "<header><h1>pixelserv-tls</h1><div class=sub>");
+    sb_addesc(&b, version);
+    sb_addf(&b, "</div></header>");
+
+    /* key numbers */
+    cls_ok = https_total < 20 ? "" : (ok_pct >= 80 ? " good" : (ok_pct >= 40 ? " mid" : " poor"));
+    sb_addf(&b, "<section class=tiles>");
+    if (up >= 86400)
+        snprintf(n3, sizeof n3, "%dd %dh %dm", (int)(up / 86400), (int)(up % 86400) / 3600, (int)(up % 3600) / 60);
+    else if (up >= 3600)
+        snprintf(n3, sizeof n3, "%dh %dm", (int)(up / 3600), (int)(up % 3600) / 60);
+    else
+        snprintf(n3, sizeof n3, "%dm %ds", (int)(up / 60), (int)(up % 60));
+    sb_addf(&b, "<div class=tile><div class='n up'>%s</div><div class=t>Uptime</div></div>", n3);
+    sb_addf(&b, "<div class=tile><div class=n>%s</div><div class=t>Requests</div><div class=d>%d ms average, %d ms slowest</div></div>",
+            fmt_num(req, n1), (int)tav, (int)tmx);
+    sb_addf(&b, "<div class=tile><div class='n%s'>%.1f%%</div><div class=t>HTTPS accepted</div><div class=d>%s of %s attempts</div></div>",
+            cls_ok, ok_pct, fmt_num(slh, n1), fmt_num(https_total, n2));
+    sb_addf(&b, "<div class=tile><div class='n%s'>%.1f%%</div><div class=t>Cert cache hits</div><div class=d>%d certs stored</div></div>",
+            (sch + scm) < 20 ? "" : (hit_pct >= 90 ? " good" : " mid"), hit_pct, sct);
+    sb_addf(&b, "<div class=tile><div class=n>%.0f%%</div><div class=t>TLS 1.3</div><div class=d>of %s TLS connections</div></div>",
+            t13_pct, fmt_num(tls_total, n1));
+    sb_addf(&b, "<div class=tile><div class=n>%d / %d</div><div class=t>Threads busy / max</div><div class=d>%.2f requests per thread</div></div>",
+            (int)kcc, (int)kmx, kvg);
+    sb_addf(&b, "</section>");
+
+    /* attention notes */
+    if (https_total >= 50 && ok_pct < 50.0) {
+        sb_addf(&b, "<div class='note bad'><b>Most HTTPS connections are being dropped.</b> ");
+        if (slu_total > 0 && pct((double)uca + ucb + uce, slu_total) > 50.0)
+            sb_addf(&b, "Clients report an unknown CA or certificate (%s times), so those devices or apps do not trust your CA. "
+                        "Install the CA certificate (<a href='/ca.crt'>ca.crt</a>) on them, or ignore apps that pin their own certificates.",
+                        fmt_num((unsigned long)uca + ucb + uce, n1));
+        else
+            sb_addf(&b, "Check the TLS handshake breakdown below.");
+        sb_addf(&b, "</div>");
+    }
+    if (clt > 0)
+        sb_addf(&b, "<div class=note><b>Requests were dropped because all service threads were busy</b> (%s times). "
+                    "Consider a higher thread limit with the -T option.</div>", fmt_num(clt, n1));
+    if (ers > 0)
+        sb_addf(&b, "<div class=note><b>%s requests were dropped for an unknown reason.</b> Raise the log level with -l 3 or higher to investigate.</div>", fmt_num(ers, n1));
+
+    sb_addf(&b, "<section class=grid>");
+
+    /* HTTPS outcome */
+    sb_addf(&b, "<div class=card><h2>HTTPS outcome</h2>");
+    if (https_total > 0) {
+        sb_addf(&b, "<div class=bar><i class=s1 style='width:%.2f%%'></i><i class=s2 style='width:%.2f%%'></i>"
+                    "<i class=s3 style='width:%.2f%%'></i><i class=s4 style='width:%.2f%%'></i><i class=s5 style='width:%.2f%%'></i></div>",
+                pct(slh, https_total), pct(slm, https_total), pct(sle, https_total), pct(slc, https_total), pct(slu, https_total));
+        sb_addf(&b, "<div class=leg><span><b class=s1></b>accepted</span><span><b class=s2></b>no certificate yet</span>"
+                    "<span><b class=s3></b>unusable cert</span><span><b class=s4></b>client left</span><span><b class=s5></b>handshake error</span></div>");
+    }
+    sb_addf(&b, "<table>");
+    html_row(&b, "Accepted", "slh", slh, "");
+    html_row(&b, "Rejected, no certificate yet", "slm", slm, "");
+    html_row(&b, "Rejected, certificate unusable", "sle", sle, "");
+    html_row(&b, "Client left before a request", "slc", slc, "");
+    html_row(&b, "Dropped, other handshake errors", "slu", slu, "");
+    sb_addf(&b, "</table></div>");
+
+    /* handshake errors */
+    sb_addf(&b, "<div class=card><h2>Why handshakes failed (reported by clients)</h2><table>");
+    html_row(&b, "Unknown CA", "uca", uca, "");
+    html_row(&b, "Bad certificate", "ucb", ucb, "");
+    html_row(&b, "Unknown certificate", "uce", uce, "");
+    html_row(&b, "Shut down after ServerHello", "ush", ush, "");
+    sb_addf(&b, "</table></div>");
+
+    /* TLS versions */
+    sb_addf(&b, "<div class=card><h2>TLS versions</h2><table>");
+    html_row(&b, "TLS 1.3", "v13", v13, "");
+    html_row(&b, "TLS 1.2", "v12", v12, "");
+    html_row(&b, "TLS 1.0", "v10", v10, "");
+    html_row(&b, "TLS 1.3 early data (0-RTT)", "zrt", zrt, "");
+    sb_addf(&b, "</table></div>");
+
+    /* requests */
+    sb_addf(&b, "<div class=card><h2>Requests</h2><table>");
+    html_row(&b, "Total (HTTP and HTTPS)", "req", req, "");
+    html_row(&b, "Average size", "avg", avg, " bytes");
+    html_row(&b, "Largest", "rmx", rmx, " bytes");
+    html_row(&b, "Average processing time", "tav", tav, " ms");
+    html_row(&b, "Slowest processing time", "tmx", tmx, " ms");
+    html_row(&b, "Log level (0 to 5)", "log", log_get_verb(), "");
+    html_row(&b, "Max requests, one thread", "krq", krq, "");
+    sb_addf(&b, "</table></div>");
+
+    /* caches */
+    sb_addf(&b, "<div class=card><h2>Caches</h2><table>");
+    html_row(&b, "Certificates in cache", "sct", sct, "");
+    html_row(&b, "Certificate reuses", "sch", sch, "");
+    html_row(&b, "Certificate misses", "scm", scm, "");
+    html_row(&b, "Certificate purges", "scp", scp, "");
+    html_row(&b, "TLS session reuses", "ssh", sst + ssh, "");
+    html_row(&b, "TLS session misses", "ssm", ssm, "");
+    html_row(&b, "TLS session purges", "ssp", ssp, "");
+    sb_addf(&b, "</table></div>");
+
+    /* what was requested */
+    sb_addf(&b, "<div class=card><h2>What was requested (GET)</h2><table>");
+    html_row(&b, "Server-side scripting", "nfe", nfe, "");
+    html_row(&b, "JavaScript", "txt", txt, "");
+    html_row(&b, "GIF", "gif", gif, "");
+    html_row(&b, "ICO", "ico", ico, "");
+    html_row(&b, "JPG", "jpg", jpg, "");
+    html_row(&b, "PNG", "png", png, "");
+    html_row(&b, "SWF", "swf", swf, "");
+    html_row(&b, "Unknown file extension", "ufe", ufe, "");
+    sb_addf(&b, "</table></div>");
+
+    /* methods and responses */
+    sb_addf(&b, "<div class=card><h2>Methods and responses</h2><table>");
+    html_row(&b, "HTTP 204 responses", "204", noc, "");
+    html_row(&b, "OPTIONS", "opt", opt, "");
+    html_row(&b, "POST", "pst", pst, "");
+    html_row(&b, "HEAD (answered 501)", "hed", hed, "");
+    html_row(&b, "Redirects", "rdr", rdr, "");
+    html_row(&b, "Empty URL", "nou", nou, "");
+    html_row(&b, "Malformed URL", "pth", pth, "");
+    html_row(&b, "Unknown request (501)", "bad", bad, "");
+    sb_addf(&b, "</table></div>");
+
+    /* dropped */
+    sb_addf(&b, "<div class=card><h2>Dropped requests</h2><table>");
+    html_row(&b, "Client left, no request sent", "cls", cls, "");
+    html_row(&b, "Client left before the response", "cly", cly, "");
+    html_row(&b, "All service threads busy", "clt", clt, "");
+    html_row(&b, "Unknown reason", "err", ers, "");
+    sb_addf(&b, "</table></div>");
+
+    sb_addf(&b, "</section><footer><span>Short codes are the counter names used by the text version");
+    if (txt_url && *txt_url) {
+        sb_addf(&b, ": <a href='");
+        sb_addesc(&b, txt_url);
+        sb_addf(&b, "'>text statistics</a>");
+    }
+    sb_addf(&b, "</span><span><label>Theme <select id=th><option value=''>Auto</option><option value=light>Light</option>"
+                "<option value=dark>Dark</option><option value=mono>Black &amp; white</option></select></label> "
+                "<label><input type=checkbox id=ar> refresh every 15 s</label></span></footer></main>%s</body></html>\r\n", stats_js);
+    (void)scp; (void)ssp;
+    return b.p;
 }
 
 // Use SMA for the first 500 samples approximated by # of requets. Use EMA afterwards

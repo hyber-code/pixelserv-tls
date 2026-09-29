@@ -167,6 +167,8 @@ char* get_version(int argc, char* argv[]);
 //   response.
 // - Similarly, stt_offset is for an in-progress status.txt response.
 char* get_stats(const int sta_offset, const int stt_offset);
+// Full HTML statistics page (allocated, caller frees). version is escaped, txt_url may be NULL.
+char* get_stats_html(const char* version, const char* txt_url);
 
 float ema(float curr, int new, int *cnt);
 

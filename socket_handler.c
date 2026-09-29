@@ -43,16 +43,6 @@
   "\r\n"
   "Connection: keep-alive\r\n"
   "\r\n";
-  // split here because we care about the length of what follows
-  static const char httpstats3[] =
-  "<!DOCTYPE html><html><head><link rel='icon' href='/favicon.ico' type='image/x-icon'/><meta name='viewport' content='width=device-width'><title>pixelserv statistics</title><style>body {font-family:monospace;} table {min-width: 75%; border-collapse: collapse;} th { height:18px; } td {border: 1px solid #e0e0e0; background-color: #f9f9f9;} td:first-child {width: 7%;} td:nth-child(2) {width: 15%; background-color: #ebebeb; border: 1px solid #f9f9f9;}</style></head><body>";
-  // stats text goes between these two strings
-  static const char httpstats4[] =
-  "</body></html>\r\n";
-
-  // note: the -2 is to avoid counting the last line ending characters
-  static const unsigned int statsbaselen = sizeof httpstats3 + sizeof httpstats4 - 2;
-
   // TXT stats response pieces
   static const char txtstats1[] =
   "HTTP/1.1 200 OK\r\n"
@@ -966,16 +956,15 @@ end_post:
           } else if (!strcmp(path, stats_url) && CONN_TLSTOR(ptr, allow_admin)) {
             pipedata.status = SEND_STATS;
             version_string = get_version(argc, argv);
-            stat_string = get_stats(1, 0);
+            stat_string = get_stats_html(version_string, stats_text_url);
+            if (!stat_string)
+              stat_string = strdup("statistics unavailable");
             rsize = asprintf(&aspbuf,
-                             "%s%u%s%s%s<br>%s%s",
+                             "%s%u%s%s",
                              httpstats1,
-                             (unsigned int)(statsbaselen + strlen(version_string) + 4 + strlen(stat_string)),
+                             (unsigned int)strlen(stat_string),
                              httpstats2,
-                             httpstats3,
-                             version_string,
-                             stat_string,
-                             httpstats4);
+                             stat_string);
             free(version_string);
             free(stat_string);
             response = aspbuf;

@@ -11,6 +11,8 @@
 * CHANGED hardening compiler flags (stack protector, format-security)
 * NEW GitHub Actions: build, smoke test, ASan/UBSan fuzz run, multi-arch image (amd64, arm64, armv7)
 * NEW deploy/: Dockerfile, docker-compose.yml, systemd unit, deployment guide for Proxmox and Raspberry Pi
+* NEW redesigned statistics page (key numbers, HTTPS outcome bar, plain labels, warnings, responsive, Auto/Light/Dark/Black & white theme); /servstats.txt is unchanged
+* FIXED remote crash on request paths made only of ?#;= characters (for example "GET ? HTTP/1.1")
 * NEW tests/smoke.sh and tests/fuzz.sh
 
 2019-12-13 v2.3.1
