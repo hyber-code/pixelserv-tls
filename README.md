@@ -98,6 +98,18 @@ Pi-hole's web interface also wants port 80, so only one of the two can have it. 
 
 Then tell Pi-hole to answer blocked domains with the IP of the machine running pixelserv-tls (Pi-hole's "blocking mode" setting, custom IP option) instead of a blank answer. Blocked ads and trackers now get an instant empty reply instead of timing out.
 
+### Upgrading an existing install (keeps your certificates)
+
+You do not have to redo anything on your devices. Upgrading keeps your CA and every certificate already generated:
+
+- Certificates already in your certificate folder keep being used until they expire (they may be RSA, valid up to 825 days). They are not deleted or regenerated. When one expires it is replaced automatically.
+- Certificates for new domains are made as ECDSA with a 398-day lifetime.
+- The CA (`ca.crt` and `ca.key`) is never changed, so devices that already trust it keep working.
+- The installer (Guide 1) reuses an existing CA folder by itself: it looks in `/var/lib/pixelserv`, then `/var/cache/pixelserv`, or you can force one with `CERT_DIR=/path bash deploy/install.sh`. Stop the old pixelserv-tls first (`systemctl stop`, or `docker stop`), because two copies cannot share ports 80 and 443.
+- After a restart, the first HTTPS request for a domain can fail once while its certificate is loaded, then it works. This is normal.
+- TLS 1.0 and 1.1 clients are no longer accepted (the statistics page shows how many you had: the "TLS 1.0" counter).
+- To make everything ECDSA right away, stop the service, delete the generated certificate files in the certificate folder (everything except `ca.crt` and `ca.key`), and start it again.
+
 ### Troubleshooting
 
 - `Address already in use`: something else owns port 80 or 443 (`ss -ltnp | grep -E ':80 |:443 '`). Pi-hole, nginx and Apache are the usual ones.
