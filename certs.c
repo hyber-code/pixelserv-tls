@@ -12,11 +12,11 @@
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <openssl/bn.h>
+#include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
-#include <openssl/crypto.h> 
-#include <openssl/x509v3.h> 
+#include <openssl/x509v3.h>
 
 #include "certs.h"
 #include "logger.h"
@@ -26,7 +26,9 @@
 #  include <malloc.h>
 #endif
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 static pthread_mutex_t *locks;
+#endif
 static SSL_CTX *g_sslctx;
 
 static sslctx_cache_struct *sslctx_tbl;
@@ -53,6 +55,10 @@ inline int sslctx_tbl_get_sess_purge() { return SSL_CTX_sess_cache_full(g_sslctx
 
 static int sslctx_tbl_insert(const char *cert_name, SSL_CTX *sslctx, int ins_idx);
 static SSL_CTX* create_child_sslctx(const char* full_pem_path, const STACK_OF(X509_INFO) *cachain);
+
+#ifdef DEBUG
+static void sslctx_tbl_dump(int idx, const char * func);
+#endif
 
 void conn_stor_init(int slots) {
     if (slots < 0) {
@@ -266,7 +272,7 @@ static int sslctx_tbl_lookup(char* cert_name, int* found_idx, int* ins_idx)
         *ins_idx = sslctx_tbl_end;
     } else {
         int idx, purge_idx = 0; // decimate the first entry if no suitable candiate
-        int _last_use = process_uptime();
+        unsigned int _last_use = process_uptime();
 
         for (idx = 0; idx < sslctx_tbl_end; idx++) {
             if (SSLCTX_TBL_get(idx, last_use) < _last_use) {
@@ -322,6 +328,25 @@ static int sslctx_tbl_cache(const char *cert_name, SSL_CTX *sslctx, int ins_idx)
     return ret;
 }
 
+static int sslctx_tbl_purge(int idx) {
+    if (idx < 0 || idx >= sslctx_tbl_end || sslctx_tbl_end <= 0)
+        return -1;
+
+    if (!SSLCTX_TBL_get(idx, cert_name))
+        free(SSLCTX_TBL_get(idx, cert_name));
+    if (!SSLCTX_TBL_get(idx, sslctx))
+        SSL_CTX_free(SSLCTX_TBL_get(idx, sslctx));
+    --sslctx_tbl_end;
+    if (idx < sslctx_tbl_end) {
+        memmove(SSLCTX_TBL_ptr(idx), SSLCTX_TBL_ptr(idx+1), sizeof(sslctx_cache_struct) * (sslctx_tbl_end - idx));
+        memset(SSLCTX_TBL_ptr(sslctx_tbl_end), 0, sizeof(sslctx_cache_struct));
+    } else {
+        memset(SSLCTX_TBL_ptr(sslctx_tbl_end), 0, sizeof(sslctx_cache_struct));
+    }
+
+    return 0;
+}
+
 #ifdef DEBUG
 static void sslctx_tbl_dump(int idx, const char * func)
 {
@@ -344,25 +369,20 @@ static void ssl_lock_cb(int mode, int type, const char *file, int line)
 }
 #endif
 
-void ssl_thread_id(CRYPTO_THREADID *id)
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+static void ssl_thread_id(CRYPTO_THREADID *id)
 {
     CRYPTO_THREADID_set_numeric(id, (unsigned long) pthread_self());
 }
 
 void ssl_init_locks()
 {
-#ifdef DEBUG
-    printf("%s: CRYPTO_num_locks = %d\n", __FUNCTION__, CRYPTO_num_locks());
-#endif
     int i;
     locks = (pthread_mutex_t *)OPENSSL_malloc(CRYPTO_num_locks()*sizeof(pthread_mutex_t));
     for (i = 0; i < CRYPTO_num_locks(); i++)
         pthread_mutex_init(&(locks[i]), NULL);
-
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
     CRYPTO_THREADID_set_callback((void (*)(CRYPTO_THREADID *)) ssl_thread_id);
     CRYPTO_set_locking_callback((void (*)(int, int, const char *, int)) ssl_lock_cb);
-#endif
 }
 
 void ssl_free_locks()
@@ -371,9 +391,13 @@ void ssl_free_locks()
     CRYPTO_set_locking_callback(NULL);
     for (i = 0; i < CRYPTO_num_locks(); i++)
         pthread_mutex_destroy(&(locks[i]));
-
     OPENSSL_free(locks);
 }
+#else
+/* OpenSSL >= 1.1.0 is thread-safe by itself, no locking callbacks needed */
+void ssl_init_locks() {}
+void ssl_free_locks() {}
+#endif
 
 static void generate_cert(char* pem_fn, const char *pem_dir, X509_NAME *issuer, EVP_PKEY *privkey)
 {
@@ -381,7 +405,6 @@ static void generate_cert(char* pem_fn, const char *pem_dir, X509_NAME *issuer, 
     EVP_PKEY *key = NULL;
     X509 *x509 = NULL;
     X509_EXTENSION *ext = NULL;
-    X509V3_CTX ext_ctx;
 #define SAN_STR_SIZE PIXELSERV_MAX_SERVER_NAME + 4 /* max("IP:", "DNS:") = 4 */
     char san_str[SAN_STR_SIZE];
     char *tld = NULL, *tld_tmp = NULL;
@@ -395,29 +418,31 @@ static void generate_cert(char* pem_fn, const char *pem_dir, X509_NAME *issuer, 
     if(pem_fn[0] == '_') pem_fn[0] = '*';
 
     // -- generate cert
-    RSA *rsa = RSA_new();
     BIGNUM *e = BN_new();
-    BN_set_word(e, RSA_F4); 
-    if (RSA_generate_key_ex(rsa, 4096, e, NULL) < 0)
+    BN_set_word(e, RSA_F4);
+#if OPENSSL_VERSION_MAJOR >= 3
+    key = EVP_RSA_gen(2048);
+    if (!key)
         goto free_all;
-#ifdef DEBUG
-    printf("%s: rsa key generated for [%s]\n", __FUNCTION__, pem_fn);
-#endif
+#else
+    RSA *rsa = RSA_new();
+    if (RSA_generate_key_ex(rsa, 2048, e, NULL) < 0)
+        goto free_all;
     key = EVP_PKEY_new();
     EVP_PKEY_assign_RSA(key, rsa); // rsa will be freed when key is freed
+#endif
 #ifdef DEBUG
-    printf("%s: rsa key assigned\n", __FUNCTION__);
+    printf("%s: rsa key generated for [%s]\n", __FUNCTION__, pem_fn);
 #endif
     if((x509 = X509_new()) == NULL)
         goto free_all;
     ASN1_INTEGER_set(X509_get_serialNumber(x509),rand());
-    X509_set_version(x509,2); // X509 v3
+    X509_set_version(x509, 2); // X509 v3
     X509_gmtime_adj(X509_get_notBefore(x509), 0);
-    X509_gmtime_adj(X509_get_notAfter(x509), 315360000L); // cert valid for 10yrs
+    X509_gmtime_adj(X509_get_notAfter(x509), 3600*24*825L); // cert valid for 825 days
     X509_set_issuer_name(x509, issuer);
     X509_NAME *name = X509_get_subject_name(x509);
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, (unsigned char *)pem_fn, -1, -1, 0);
-    X509V3_set_ctx_nodb(&ext_ctx);
 
     tld_tmp = strchr(pem_fn, '.');
     while(tld_tmp != NULL) {
@@ -427,7 +452,11 @@ static void generate_cert(char* pem_fn, const char *pem_dir, X509_NAME *issuer, 
     }
     tld_tmp = (dot_count == 3 && (atoi(tld) > 0 || (atoi(tld) == 0 && strlen(tld) == 1))) ? "IP" : "DNS";
     snprintf(san_str, SAN_STR_SIZE, "%s:%s", tld_tmp, pem_fn);
-    if ((ext = X509V3_EXT_conf_nid(NULL, &ext_ctx, NID_subject_alt_name, san_str)) == NULL)
+    if ((ext = X509V3_EXT_conf_nid(NULL, NULL, NID_subject_alt_name, san_str)) == NULL)
+        goto free_all;
+    X509_add_ext(x509, ext, -1);
+    X509_EXTENSION_free(ext);
+    if ((ext = X509V3_EXT_conf_nid(NULL, NULL, NID_ext_key_usage, "TLS Web Server Authentication")) == NULL)
         goto free_all;
     X509_add_ext(x509, ext, -1);
     X509_set_pubkey(x509, key);
@@ -459,9 +488,9 @@ free_all:
 }
 
 
-static int pem_passwd_cb(char *buf, int size, int rwflag, void *u) { 
+static int pem_passwd_cb(char *buf, int size, int rwflag, void *u) {
     int rv = 0, fp;
-    char *fname = NULL; 
+    char *fname = NULL;
     if (asprintf(&fname, "%s/ca.key.passphrase", (char*)u) < 0)
         goto quit_cb;
 
@@ -527,15 +556,9 @@ void cert_tlstor_init(const char *pem_dir, cert_tlstor_t *ct)
 
     snprintf(cert_file, PIXELSERV_MAX_PATH, "%s/ca.key", pem_dir);
     fp = fopen(cert_file, "r");
-    RSA *rsa = NULL;
-
-    if(!fp || !PEM_read_RSAPrivateKey(fp, &rsa, pem_passwd_cb, (void*)pem_dir))
+    if(!fp || !PEM_read_PrivateKey(fp, &ct->privkey, pem_passwd_cb, (void*)pem_dir))
         log_msg(LGG_ERR, "%s: failed to load ca.key", __FUNCTION__);
-    else {
-        ct->privkey = EVP_PKEY_new();
-        EVP_PKEY_assign_RSA(ct->privkey, rsa); /* rsa auto freed when key is freed */
-        fclose(fp);
-    }
+    fclose(fp);
 }
 
 void cert_tlstor_cleanup(cert_tlstor_t *c)
@@ -561,9 +584,9 @@ void *cert_generator(void *ptr) {
     srand((unsigned int)time(NULL));
 
     for (;;) {
-        int cnt, ret;
+        int ret;
         if(fd == -1)
-            log_msg(LGG_ERR, "%s: failed to open %s: %s", PIXEL_CERT_PIPE, strerror(errno));
+            log_msg(LGG_ERR, "%s: failed to open %s: %s", __FUNCTION__, PIXEL_CERT_PIPE, strerror(errno));
         strcpy(buf, half_token);
         struct pollfd pfd = { fd, POLLIN, POLLIN };
         ret = poll(&pfd, 1, 1000 * PIXEL_SSL_SESS_TIMEOUT / 4);
@@ -582,6 +605,7 @@ void *cert_generator(void *ptr) {
             }
             continue;
         }
+        ssize_t cnt;
         if((cnt = read(fd, buf + strlen(half_token), PIXELSERV_MAX_SERVER_NAME * 4 - strlen(half_token))) == 0) {
 #ifdef DEBUG
              printf("%s: pipe EOF\n", __FUNCTION__);
@@ -590,11 +614,12 @@ void *cert_generator(void *ptr) {
             fd = open(PIXEL_CERT_PIPE, O_RDONLY | O_NONBLOCK); /* non block required */
             continue;
         }
-        if (cnt < PIXELSERV_MAX_SERVER_NAME * 4 - strlen(half_token)) {
+        if (!cnt) continue;
+        if ((size_t)cnt < PIXELSERV_MAX_SERVER_NAME * 4 - strlen(half_token)) {
             buf[cnt + strlen(half_token)] = '\0';
             half_token = buf + PIXELSERV_MAX_SERVER_NAME * 4;
         } else {
-            int i;
+            size_t i = 0;
             for (i=1; buf[PIXELSERV_MAX_SERVER_NAME * 4 - i]!=':' && i < strlen(buf); i++);
             half_token = buf + PIXELSERV_MAX_SERVER_NAME * 4 - i + 1;
             buf[PIXELSERV_MAX_SERVER_NAME * 4 - i + 1] = '\0';
@@ -700,7 +725,7 @@ static int tls_servername_cb(SSL *ssl, int *ad, void *arg) {
         tld = pem_file + 1;
         pem_file = strchr(tld, '.');
     }
-    if (dot_count <= 1 || (dot_count == 3 && atoi(tld) > 0)) {
+    if (dot_count <= 1 || (dot_count == 2 && strlen(tld) == 2) || (dot_count == 3 && atoi(tld) > 0)) {
         pem_file = srv_name;
         strncat(full_pem_path, srv_name, PIXELSERV_MAX_PATH - len);
         len += strlen(srv_name);
@@ -720,7 +745,6 @@ static int tls_servername_cb(SSL *ssl, int *ad, void *arg) {
         goto quit_cb;
     }
 
-    SSL_CTX *sslctx;
     int handle, ins_handle;
     sslctx_tbl_lookup(pem_file, &handle, &ins_handle);
 #ifdef DEBUG
@@ -729,40 +753,72 @@ static int tls_servername_cb(SSL *ssl, int *ad, void *arg) {
         sslctx_tbl_dump(handle, __FUNCTION__);
     if (ins_handle >=0) sslctx_tbl_dump(ins_handle, __FUNCTION__);
 #endif
-    if (handle < 0) {
-        struct stat st;
-        if (stat(full_pem_path, &st) != 0) {
-            int fd;
-            cbarg->status = SSL_MISS;
-            log_msg(LGG_WARNING, "%s %s missing", srv_name, pem_file);
-            if ((fd = open(PIXEL_CERT_PIPE, O_WRONLY)) < 0)
-                log_msg(LGG_ERR, "%s: failed to open pipe: %s", __FUNCTION__, strerror(errno));
-            else {
-                int i;
-                for(i=0; i< strlen(pem_file); i++)
-                    *(full_pem_path + i) = *(pem_file + i);
-                *(full_pem_path + i) = ':';
-                *(full_pem_path + i + 1) = '\0';
 
-                if (write(fd, full_pem_path, strlen(full_pem_path)) < 0)
-                    log_msg(LGG_ERR, "%s: failed to write pipe: %s", __FUNCTION__, strerror(errno));
-                close(fd);
-            }
-            rv = CB_ERR;
+    if (handle >= 0) {
+        SSL_set_SSL_CTX(ssl, SSLCTX_TBL_get(handle, sslctx));
+        if (X509_cmp_time(X509_get_notAfter(SSL_get_certificate(ssl)), NULL) > 0) {
+            cbarg->status = SSL_HIT;
             goto quit_cb;
         }
-        if (NULL == (sslctx  = create_child_sslctx(full_pem_path, cbarg->cachain))
-            || 0 > sslctx_tbl_cache(pem_file, sslctx, ins_handle)) {
-            log_msg(LGG_ERR, "%s: fail to create sslctx or cache %s", __FUNCTION__, pem_file);
-            cbarg->status = SSL_ERR;
-            rv = CB_ERR;
-            goto quit_cb;
+        // the certificate has expired. let's re-generate
+        cbarg->status = SSL_ERR;
+        log_msg(LGG_WARNING, "Expired certificate %s", pem_file);
+        sslctx_tbl_purge(handle);
+        remove(full_pem_path);
+        goto submit_missing_cert;
+    }
+
+    struct stat st;
+    if (stat(full_pem_path, &st) != 0) {
+        int fd;
+        cbarg->status = SSL_MISS;
+        log_msg(LGG_WARNING, "%s %s missing", srv_name, pem_file);
+
+submit_missing_cert:
+
+        if ((fd = open(PIXEL_CERT_PIPE, O_WRONLY)) < 0)
+            log_msg(LGG_ERR, "%s: failed to open pipe: %s", __FUNCTION__, strerror(errno));
+        else {
+            size_t i = 0;
+            for(i=0; i< strlen(pem_file); i++)
+                *(full_pem_path + i) = *(pem_file + i);
+            *(full_pem_path + i) = ':';
+            *(full_pem_path + i + 1) = '\0';
+
+            if (write(fd, full_pem_path, strlen(full_pem_path)) < 0)
+                log_msg(LGG_ERR, "%s: failed to write pipe: %s", __FUNCTION__, strerror(errno));
+            close(fd);
         }
-    } else
-        sslctx = SSLCTX_TBL_get(handle, sslctx);
+
+        rv = CB_ERR;
+        goto quit_cb;
+    }
+
+    SSL_CTX *sslctx = NULL;
+    if (NULL == (sslctx = create_child_sslctx(full_pem_path, cbarg->cachain))) {
+        log_msg(LGG_ERR, "%s: fail to create sslctx or cache %s", __FUNCTION__, pem_file);
+        cbarg->status = SSL_ERR;
+        rv = CB_ERR;
+        goto quit_cb;
+    }
 
     SSL_set_SSL_CTX(ssl, sslctx);
+    if (X509_cmp_time(X509_get_notAfter(SSL_get_certificate(ssl)), NULL) < 0) {
+        // the certificate has expired. let's re-generate
+        cbarg->status = SSL_ERR;
+        log_msg(LGG_WARNING, "Expired certificate %s", pem_file);
+        remove(full_pem_path);
+        goto submit_missing_cert;
+    }
+
+    if (sslctx_tbl_cache(pem_file, sslctx, ins_handle) < 0) {
+        log_msg(LGG_ERR, "%s: fail to create sslctx or cache %s", __FUNCTION__, pem_file);
+        cbarg->status = SSL_ERR;
+        rv = CB_ERR;
+        goto quit_cb;
+    }
     cbarg->status = SSL_HIT;
+
 quit_cb:
     return rv;
 }
@@ -782,21 +838,23 @@ static SSL_SESSION *get_session(SSL *ssl, unsigned char *id, int idlen, int *do_
 
 static SSL_CTX* create_child_sslctx(const char* full_pem_path, const STACK_OF(X509_INFO) *cachain)
 {
-    SSL_CTX *sslctx = SSL_CTX_new(SSLv23_server_method());
-#ifdef PIXELSERV_SSL_HAS_ECDH_AUTO
-    SSL_CTX_set_ecdh_auto(sslctx, 1);
-#else
+    SSL_CTX *sslctx = SSL_CTX_new(TLS_server_method());
+#if OPENSSL_VERSION_NUMBER < 0x10101000L
     EC_KEY *ecdh = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
     if (!ecdh)
         log_msg(LGG_ERR, "%s: cannot get ECDH curve", __FUNCTION__);
     SSL_CTX_set_tmp_ecdh(sslctx, ecdh);
     EC_KEY_free(ecdh);
+#else
+    int glist [] = { NID_X9_62_prime256v1 };
+    SSL_CTX_set1_groups(sslctx, glist, sizeof(glist)/sizeof(glist[0]));
 #endif
+
     SSL_CTX_set_options(sslctx,
           SSL_OP_SINGLE_DH_USE |
           SSL_MODE_RELEASE_BUFFERS |
           SSL_OP_NO_COMPRESSION | SSL_OP_NO_TICKET |
-          SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1_1 |
+          SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 |
           SSL_OP_CIPHER_SERVER_PREFERENCE);
     /* server-side caching */
     SSL_CTX_set_session_cache_mode(sslctx, SSL_SESS_CACHE_NO_AUTO_CLEAR | SSL_SESS_CACHE_SERVER);
@@ -806,7 +864,7 @@ static SSL_CTX* create_child_sslctx(const char* full_pem_path, const STACK_OF(X5
         log_msg(LGG_DEBUG, "%s: failed to set cipher list", __FUNCTION__);
 #ifdef TLS1_3_VERSION
     SSL_CTX_set1_groups_list(sslctx, "X25519:P-256");
-    SSL_CTX_set_min_proto_version(sslctx, TLS1_VERSION);
+    SSL_CTX_set_min_proto_version(sslctx, TLS1_2_VERSION);
     SSL_CTX_set_max_proto_version(sslctx, TLS1_3_VERSION);
     if (SSL_CTX_set_ciphersuites(sslctx, PIXELSERV_TLSV1_3_CIPHERS) <= 0)
         log_msg(LGG_DEBUG, "%s: failed to set TLSv1.3 ciphersuites", __FUNCTION__);
@@ -825,7 +883,7 @@ static SSL_CTX* create_child_sslctx(const char* full_pem_path, const STACK_OF(X5
                     !SSL_CTX_add_extra_chain_cert(sslctx, X509_dup(inf->x509)))
             {
                 SSL_CTX_free(sslctx);
-                log_msg(LGG_ERR, "%s: cannot add CA cert %d\n", i, __FUNCTION__);  /* X509_ref_up requires >= v1.1 */
+                log_msg(LGG_ERR, "%s: cannot add CA cert %d\n", __FUNCTION__, i);  /* X509_ref_up requires >= v1.1 */
                 return NULL;
             }
         }
@@ -838,11 +896,11 @@ SSL_CTX* create_default_sslctx(const char *pem_dir)
     if (g_sslctx)
         return g_sslctx;
 
-    g_sslctx = SSL_CTX_new(SSLv23_server_method());
+    g_sslctx = SSL_CTX_new(TLS_server_method());
     SSL_CTX_set_options(g_sslctx,
           SSL_MODE_RELEASE_BUFFERS |
           SSL_OP_NO_COMPRESSION |
-          SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1_1 |
+          SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 |
           SSL_OP_CIPHER_SERVER_PREFERENCE);
     SSL_CTX_sess_set_cache_size(g_sslctx, PIXEL_SSL_SESS_CACHE_SIZE);
     SSL_CTX_set_session_cache_mode(g_sslctx, SSL_SESS_CACHE_SERVER);
@@ -852,6 +910,7 @@ SSL_CTX* create_default_sslctx(const char *pem_dir)
     SSL_CTX_sess_set_remove_cb(g_sslctx, remove_session); */
     if (SSL_CTX_set_cipher_list(g_sslctx, PIXELSERV_CIPHER_LIST) <= 0)
         log_msg(LGG_DEBUG, "cipher_list cannot be set");
+    SSL_CTX_set_min_proto_version(g_sslctx, TLS1_2_VERSION);
 #ifndef TLS1_3_VERSION
     SSL_CTX_set_tlsext_servername_callback(g_sslctx, tls_servername_cb);
 #else
@@ -894,7 +953,7 @@ int is_ssl_conn(int fd, char *srv_ip, int srv_ip_len, const int *ssl_ports, int 
 #ifdef TLS1_3_VERSION
 char* read_tls_early_data(SSL *ssl, int *err)
 {
-    size_t buf_siz = PIXEL_TLS_EARLYDATA_SIZE;
+    ssize_t buf_siz = PIXEL_TLS_EARLYDATA_SIZE;
     char *buf, *pbuf;
     int count = 0;
 
@@ -978,7 +1037,7 @@ void run_benchmark(const cert_tlstor_t *ct, const char *cert)
     if (asprintf(&cert_file, "%s/%s", ct->pem_dir, cert) > 0)
       printf("%s\n", cert);
 
-    if (asprintf(&domain, "%s", cert) > 0 && domain[0] == '_') 
+    if (asprintf(&domain, "%s", cert) > 0 && domain[0] == '_')
       domain[0] = '*';
 
     r_tm0 = 0; g_tm0 = 0;

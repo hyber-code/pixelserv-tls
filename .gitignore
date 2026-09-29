@@ -29,3 +29,24 @@ configure
 depcomp
 install-sh
 missing
+
+# build output
+config.h
+config.h.in
+config.log
+config.status
+configure
+Makefile
+Makefile.in
+aclocal.m4
+autom4te.cache/
+stamp-h1
+.deps/
+*.o
+pixelserv-tls
+config.guess
+config.sub
+install-sh
+missing
+depcomp
+compile

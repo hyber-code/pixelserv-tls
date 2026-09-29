@@ -1,0 +1,26 @@
+name: build
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y autoconf automake libssl-dev curl openssl
+      - name: Build
+        run: autoreconf -i && ./configure && make
+      - name: Smoke test
+        run: sudo bash tests/smoke.sh ./pixelserv-tls
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build amd64, arm64 (Pi 4/5) and armv7 (Pi 2/3 32-bit)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: false
